@@ -23,7 +23,7 @@ Concrete scenarios showing when and how to use the my tool effectively.
 ### "What model are you running?"
 ```
 → my(action="check", key="model")
-  → 'anthropic/claude-sonnet-4-20250514'
+  → 'anthropic/claude-haiku-4.5'
 ```
 
 ## Adaptive Behavior
@@ -37,11 +37,11 @@ Concrete scenarios showing when and how to use the my tool effectively.
 → "I've expanded my context window to handle this large codebase."
 ```
 
-### Switching to a faster model for repetitive tasks
+### Switching to a more capable model for harder tasks
 ```
-→ my(action="set", key="model", value="anthropic/claude-haiku-4-5-20251001")
-  → "Set model = 'anthropic/claude-haiku-4-5-20251001' (was 'anthropic/claude-sonnet-4-20250514')"
-→ "Switched to a faster model for these batch tasks."
+→ my(action="set", key="model", value="anthropic/claude-sonnet-4-6")
+  → "Set model = 'anthropic/claude-sonnet-4-6' (was 'anthropic/claude-haiku-4.5')"
+→ "Switched to a more capable model for this refactor."
 ```
 
 ## Cross-Turn Memory

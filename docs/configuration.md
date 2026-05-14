@@ -686,7 +686,7 @@ Existing configs do not need to change. If you do not set `modelPresets` or `age
       "reasoningEffort": "low"
     },
     "deep": {
-      "model": "anthropic/claude-haiku-4-5",
+      "model": "anthropic/claude-haiku-4.5",
       "provider": "anthropic",
       "maxTokens": 8192,
       "contextWindowTokens": 200000,
