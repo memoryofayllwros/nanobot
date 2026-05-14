@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import io
 import mimetypes
 import os
 import re
 import uuid
+import zipfile
 from pathlib import Path
 from urllib.parse import unquote
 
@@ -18,6 +20,9 @@ from nanobot.utils.media_decode import MAX_FILE_SIZE
 # Inbound WhatsApp / SMS convention from JoJo bridge: one line per attachment.
 _MEDIA_LINE_RE = re.compile(
     r"(?m)^\[media:(?P<idx>\d+):(?P<url>https?://[^\]\s]+)\]\s*$",
+)
+_MEDIA_CONTENT_TYPE_LINE_RE = re.compile(
+    r"^\[media_content_type:(?P<idx>\d+):(?P<content_type>[^\]]+)\]\s*$",
 )
 
 _TWILIO_MEDIA_HOST_MARKERS = ("api.twilio.com", "messaging.twilio.com")
@@ -110,12 +115,52 @@ def _guess_extension(content_type: str | None, url: str) -> str:
     return ".bin"
 
 
+def _guess_extension_from_bytes(raw: bytes) -> str | None:
+    if raw.startswith(b"%PDF"):
+        return ".pdf"
+    if raw.startswith(b"\x89PNG\r\n\x1a\n"):
+        return ".png"
+    if raw.startswith(b"\xff\xd8\xff"):
+        return ".jpg"
+    if raw.startswith(b"GIF87a") or raw.startswith(b"GIF89a"):
+        return ".gif"
+    if raw.startswith(b"RIFF") and raw[8:12] == b"WEBP":
+        return ".webp"
+    if raw.startswith(b"OggS"):
+        return ".ogg"
+    if raw.startswith(b"ID3") or raw[:2] == b"\xff\xfb":
+        return ".mp3"
+    if raw.startswith(b"#!AMR"):
+        return ".amr"
+    if raw.startswith(b"RIFF") and raw[8:12] == b"WAVE":
+        return ".wav"
+    if raw.startswith(b"PK\x03\x04"):
+        try:
+            with zipfile.ZipFile(io.BytesIO(raw)) as zf:
+                names = set(zf.namelist())
+        except zipfile.BadZipFile:
+            return ".zip"
+        if "word/document.xml" in names:
+            return ".docx"
+        if "xl/workbook.xml" in names:
+            return ".xlsx"
+        if "ppt/presentation.xml" in names:
+            return ".pptx"
+        return ".zip"
+    return None
+
+
 def _is_twilio_media_url(url: str) -> bool:
     u = url.lower()
     return any(h in u for h in _TWILIO_MEDIA_HOST_MARKERS)
 
 
-async def _download_one(url: str, media_dir: Path, creds: tuple[str, str]) -> str | None:
+async def _download_one(
+    url: str,
+    media_dir: Path,
+    creds: tuple[str, str],
+    content_type_hint: str | None = None,
+) -> str | None:
     max_bytes = int(os.getenv("NANOBOT_TWILIO_MEDIA_MAX_BYTES") or str(MAX_FILE_SIZE))
     try:
         async with httpx.AsyncClient(
@@ -134,14 +179,8 @@ async def _download_one(url: str, media_dir: Path, creds: tuple[str, str]) -> st
                     )
                     return None
                 cd = resp.headers.get("content-disposition")
-                ct = resp.headers.get("content-type")
+                ct = content_type_hint or resp.headers.get("content-type")
                 fname_hint = _filename_from_content_disposition(cd)
-                ext = _guess_extension(ct, url)
-                if fname_hint:
-                    base = f"{uuid.uuid4().hex[:12]}_{safe_filename(fname_hint)}"
-                else:
-                    base = f"{uuid.uuid4().hex[:12]}{ext}"
-                dest = media_dir / safe_filename(base)
                 size = 0
                 chunks: list[bytes] = []
                 async for chunk in resp.aiter_bytes():
@@ -156,7 +195,16 @@ async def _download_one(url: str, media_dir: Path, creds: tuple[str, str]) -> st
                         )
                         return None
                     chunks.append(chunk)
-                dest.write_bytes(b"".join(chunks))
+                raw = b"".join(chunks)
+                ext = _guess_extension_from_bytes(raw) or _guess_extension(ct, url)
+                if fname_hint:
+                    base = f"{uuid.uuid4().hex[:12]}_{safe_filename(fname_hint)}"
+                    if Path(base).suffix.lower() in {"", ".bin"} and ext != ".bin":
+                        base = f"{Path(base).stem}{ext}"
+                else:
+                    base = f"{uuid.uuid4().hex[:12]}{ext}"
+                dest = media_dir / safe_filename(base)
+                dest.write_bytes(raw)
                 logger.info(
                     "Saved Twilio media -> {} ({} bytes, ct={})",
                     dest.name,
@@ -182,7 +230,13 @@ async def ingest_twilio_media_lines(text: str, media_dir: Path) -> tuple[str, li
     media_dir.mkdir(parents=True, exist_ok=True)
     saved_paths: list[str] = []
     new_lines: list[str] = []
+    content_type_hints: dict[str, str] = {}
     for line in text.splitlines():
+        type_match = _MEDIA_CONTENT_TYPE_LINE_RE.match(line)
+        if type_match:
+            content_type_hints[type_match.group("idx")] = type_match.group("content_type").strip()
+            continue
+
         m = _MEDIA_LINE_RE.match(line)
         if not m:
             new_lines.append(line)
@@ -191,7 +245,7 @@ async def ingest_twilio_media_lines(text: str, media_dir: Path) -> tuple[str, li
         if not _is_twilio_media_url(url):
             new_lines.append(line)
             continue
-        path = await _download_one(url, media_dir, creds)
+        path = await _download_one(url, media_dir, creds, content_type_hints.get(m.group("idx")))
         if path:
             saved_paths.append(path)
         else:

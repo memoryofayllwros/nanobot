@@ -105,11 +105,40 @@ def _extract_docx(path: Path) -> str:
         return "[error: python-docx not installed]"
     try:
         doc = DocxDocument(path)
+        parts: list[str] = []
         paragraphs: list[str] = [p.text for p in doc.paragraphs if p.text.strip()]
-        return _truncate("\n\n".join(paragraphs), _MAX_TEXT_LENGTH)
+        if paragraphs:
+            parts.append("\n\n".join(paragraphs))
+
+        table_text = _extract_docx_tables(doc.tables)
+        if table_text:
+            parts.append(table_text)
+
+        return _truncate("\n\n".join(parts), _MAX_TEXT_LENGTH)
     except Exception as e:
         logger.exception("Failed to extract DOCX {}", path)
         return f"[error: failed to extract DOCX: {e!s}]"
+
+
+def _extract_docx_tables(tables) -> str:
+    """Extract text from DOCX tables, including nested tables in cells."""
+    chunks: list[str] = []
+    for table_index, table in enumerate(tables, 1):
+        rows: list[str] = []
+        for row in table.rows:
+            cells: list[str] = []
+            for cell in row.cells:
+                cell_parts = [p.text.strip() for p in cell.paragraphs if p.text.strip()]
+                nested = _extract_docx_tables(cell.tables)
+                if nested:
+                    cell_parts.append(nested)
+                cells.append(" ".join(cell_parts))
+            row_text = "\t".join(cells).strip()
+            if row_text:
+                rows.append(row_text)
+        if rows:
+            chunks.append(f"--- Table {table_index} ---\n" + "\n".join(rows))
+    return "\n\n".join(chunks)
 
 
 def _extract_xlsx(path: Path) -> str:
