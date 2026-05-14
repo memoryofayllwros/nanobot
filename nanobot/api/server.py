@@ -16,18 +16,16 @@ from typing import Any
 from aiohttp import web
 from loguru import logger
 
+from nanobot.api.twilio_media import ingest_twilio_media_lines
 from nanobot.config.paths import get_media_dir
 from nanobot.utils.helpers import safe_filename
 from nanobot.utils.media_decode import (
     MAX_FILE_SIZE,
-)
-from nanobot.utils.media_decode import (
     FileSizeExceeded as _FileSizeExceeded,
-)
-from nanobot.utils.media_decode import (
     save_base64_data_url as _save_base64_data_url,
 )
 from nanobot.utils.runtime import EMPTY_FINAL_RESPONSE_MESSAGE
+
 
 __all__ = (
     "MAX_FILE_SIZE",
@@ -205,6 +203,9 @@ async def handle_chat_completions(request: web.Request) -> web.Response:
     try:
         if content_type.startswith("multipart/"):
             text, media_paths, session_id, requested_model = await _parse_multipart(request)
+            twilio_dir = get_media_dir("api")
+            text, twilio_paths = await ingest_twilio_media_lines(text, twilio_dir)
+            media_paths.extend(twilio_paths)
         else:
             try:
                 body = await request.json()
@@ -213,6 +214,9 @@ async def handle_chat_completions(request: web.Request) -> web.Response:
             stream = body.get("stream", False)
             requested_model = body.get("model")
             text, media_paths = _parse_json_content(body)
+            twilio_dir = get_media_dir("api")
+            text, twilio_paths = await ingest_twilio_media_lines(text, twilio_dir)
+            media_paths.extend(twilio_paths)
             session_id = body.get("session_id")
     except ValueError as e:
         return _error_json(400, str(e))

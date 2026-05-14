@@ -272,10 +272,25 @@ def extract_documents(
         mime = detect_image_mime(header) or mimetypes.guess_type(path_str)[0]
         if mime and mime.startswith("image/"):
             image_paths.append(path_str)
+        elif mime and mime.startswith("audio/"):
+            doc_texts.append(
+                f"[Audio: {p.name}]\n"
+                f"Local path (for transcription / tools): {path_str}\n"
+                f"MIME: {mime}"
+            )
         else:
             extracted = extract_text(p)
             if extracted and not extracted.startswith("[error:"):
                 doc_texts.append(f"[File: {p.name}]\n{extracted}")
+            elif extracted and extracted.startswith("[error:"):
+                doc_texts.append(f"[File: {p.name}]\n{extracted}")
+            else:
+                doc_texts.append(
+                    f"[Attachment: {p.name}]\n"
+                    f"Binary or unsupported extension for text extraction. "
+                    f"Local path: {path_str}"
+                    + (f"\nDetected MIME: {mime}" if mime else "")
+                )
 
     if doc_texts:
         text = text + "\n\n" + "\n\n".join(doc_texts)
