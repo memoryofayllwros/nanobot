@@ -436,9 +436,9 @@ class AnthropicProvider(LLMProvider):
         max_tokens = max(1, max_tokens)
         thinking_enabled = bool(reasoning_effort) and reasoning_effort.lower() != "none"
 
-        # claude-opus-4-7 deprecated the `temperature` parameter entirely — the
+        # claude-haiku-4.5 deprecated the `temperature` parameter entirely — the
         # API returns 400 if it is present, on any code path.
-        omit_temperature = "opus-4-7" in model_name
+        omit_temperature = "haiku-4.5" in model_name
 
         kwargs: dict[str, Any] = {
             "model": model_name,
@@ -451,7 +451,7 @@ class AnthropicProvider(LLMProvider):
 
         if reasoning_effort == "adaptive":
             # Adaptive thinking: model decides when and how much to think
-            # Supported on claude-sonnet-4-6 and claude-opus-4-6.
+            # Supported on claude-sonnet-4-6 and claude-haiku-4.5.
             # Also auto-enables interleaved thinking between tool calls.
             kwargs["thinking"] = {"type": "adaptive"}
             if not omit_temperature:

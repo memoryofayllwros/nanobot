@@ -112,7 +112,7 @@ class AgentDefaults(Base):
 
     workspace: str = "~/.nanobot/workspace"
     model_preset: str | None = None  # Active preset name — takes precedence over fields below
-    model: str = "anthropic/claude-opus-4-5"
+    model: str = "anthropic/claude-haiku-4.5"
     provider: str = (
         "auto"  # Provider name (e.g. "anthropic", "openrouter") or "auto" for auto-detection
     )

@@ -91,7 +91,7 @@ IMAP_PASSWORD=your-password-here
 <details>
 <summary><b>AWS Bedrock (Converse API)</b></summary>
 
-Bedrock uses the native `bedrock-runtime` Converse API, so it can call Bedrock model IDs such as Claude Opus 4.7, Claude Sonnet, Amazon Nova, Meta Llama, Mistral, Qwen, and other models that support Converse. It supports normal chat, streaming, tool calling, tool results, token usage, and Bedrock error metadata.
+Bedrock uses the native `bedrock-runtime` Converse API, so it can call Bedrock model IDs such as Claude Haiku 4.5, Claude Sonnet, Amazon Nova, Meta Llama, Mistral, Qwen, and other models that support Converse. It supports normal chat, streaming, tool calling, tool results, token usage, and Bedrock error metadata.
 
 This provider is for Bedrock's native Converse API, not Bedrock's OpenAI-compatible `/openai/v1` endpoint. For OpenAI-compatible Bedrock models, you can still use `custom` if you specifically want that API surface.
 
@@ -179,7 +179,7 @@ With a named AWS profile:
 }
 ```
 
-**3. Claude Opus 4.7 example**
+**3. Claude Haiku 4.5 example**
 
 ```json
 {
@@ -191,7 +191,7 @@ With a named AWS profile:
   "agents": {
     "defaults": {
       "provider": "bedrock",
-      "model": "bedrock/global.anthropic.claude-opus-4-7",
+      "model": "bedrock/global.anthropic.claude-haiku-4.5",
       "reasoningEffort": "medium",
       "maxTokens": 8192
     }
@@ -199,9 +199,9 @@ With a named AWS profile:
 }
 ```
 
-For regional routing, use one of Bedrock's inference IDs, for example `bedrock/us.anthropic.claude-opus-4-7`, `bedrock/eu.anthropic.claude-opus-4-7`, or `bedrock/jp.anthropic.claude-opus-4-7`.
+For regional routing, use one of Bedrock's inference IDs, for example `bedrock/us.anthropic.claude-haiku-4.5`, `bedrock/eu.anthropic.claude-haiku-4.5`, or `bedrock/jp.anthropic.claude-haiku-4.5`.
 
-Claude Opus 4.7 does not accept `temperature`, `top_p`, or `top_k`; nanobot omits `temperature` automatically for this model. If `reasoningEffort` is set to `low`, `medium`, `high`, `max`, or `adaptive`, nanobot sends Bedrock's adaptive thinking parameter.
+Claude Haiku 4.5 does not accept `temperature`, `top_p`, or `top_k`; nanobot omits `temperature` automatically for this model. If `reasoningEffort` is set to `low`, `medium`, `high`, `max`, or `adaptive`, nanobot sends Bedrock's adaptive thinking parameter.
 
 Anthropic models on Bedrock can also require Anthropic use-case registration and are subject to Anthropic-supported country/region restrictions. If Claude fails with a `ValidationException` about unsupported countries or regions, try a non-Anthropic Bedrock model such as Amazon Nova to verify the provider setup.
 
@@ -213,8 +213,8 @@ Examples:
 
 - `bedrock/amazon.nova-micro-v1:0`
 - `bedrock/amazon.nova-lite-v1:0`
-- `bedrock/global.anthropic.claude-opus-4-7`
-- `bedrock/us.anthropic.claude-opus-4-7`
+- `bedrock/global.anthropic.claude-haiku-4.5`
+- `bedrock/us.anthropic.claude-haiku-4.5`
 - `bedrock/openai.gpt-oss-20b-1:0`
 - `bedrock/meta.llama...`
 - `bedrock/mistral...`
@@ -686,7 +686,7 @@ Existing configs do not need to change. If you do not set `modelPresets` or `age
       "reasoningEffort": "low"
     },
     "deep": {
-      "model": "anthropic/claude-opus-4-5",
+      "model": "anthropic/claude-haiku-4-5",
       "provider": "anthropic",
       "maxTokens": 8192,
       "contextWindowTokens": 200000,

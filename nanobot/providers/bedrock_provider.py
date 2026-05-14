@@ -16,8 +16,8 @@ from nanobot.providers.base import LLMProvider, LLMResponse, ToolCallRequest
 
 _IMAGE_DATA_URL = re.compile(r"^data:image/([a-zA-Z0-9.+-]+);base64,(.*)$", re.DOTALL)
 _TEXT_BLOCK_TYPES = {"text", "input_text", "output_text"}
-_TEMPERATURE_UNSUPPORTED_MODEL_TOKENS = ("claude-opus-4-7",)
-_ADAPTIVE_THINKING_ONLY_MODEL_TOKENS = ("claude-opus-4-7",)
+_TEMPERATURE_UNSUPPORTED_MODEL_TOKENS = ("claude-haiku-4.5",)
+_ADAPTIVE_THINKING_ONLY_MODEL_TOKENS = ("claude-haiku-4.5",)
 _NOOP_TOOL_NAME = "nanobot_noop"
 
 
@@ -45,7 +45,7 @@ class BedrockProvider(LLMProvider):
         self,
         api_key: str | None = None,
         api_base: str | None = None,
-        default_model: str = "bedrock/global.anthropic.claude-opus-4-7",
+        default_model: str = "bedrock/global.anthropic.claude-haiku-4.5",
         *,
         region: str | None = None,
         profile: str | None = None,

@@ -88,7 +88,7 @@ Configure these **two parts** in your config (other options have defaults).
 {
   "agents": {
     "defaults": {
-      "model": "anthropic/claude-opus-4-5",
+      "model": "anthropic/claude-haiku-4.5",
       "provider": "openrouter"
     }
   }
