@@ -5,8 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 from contextlib import suppress
-from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from loguru import logger
 
@@ -15,19 +14,6 @@ from nanobot.bus.queue import MessageBus
 from nanobot.channels.base import BaseChannel
 from nanobot.config.schema import Config
 from nanobot.utils.restart import consume_restart_notice_from_env, format_restart_completed_message
-
-if TYPE_CHECKING:
-    from nanobot.session.manager import SessionManager
-
-
-def _default_webui_dist() -> Path | None:
-    """Return the absolute path to the bundled webui dist directory if it exists."""
-    try:
-        import nanobot.web as web_pkg  # type: ignore[import-not-found]
-    except ImportError:
-        return None
-    candidate = Path(web_pkg.__file__).resolve().parent / "dist"
-    return candidate if candidate.is_dir() else None
 
 
 # Retry delays for message sending (exponential backoff: 1s, 2s, 4s)
@@ -44,7 +30,7 @@ class ChannelManager:
     Manages chat channels and coordinates message routing.
 
     Responsibilities:
-    - Initialize enabled channels (Telegram, WhatsApp, etc.)
+    - Initialize enabled channels (e.g. WhatsApp)
     - Start/stop channels
     - Route outbound messages
     """
@@ -53,12 +39,9 @@ class ChannelManager:
         self,
         config: Config,
         bus: MessageBus,
-        *,
-        session_manager: "SessionManager | None" = None,
     ):
         self.config = config
         self.bus = bus
-        self._session_manager = session_manager
         self.channels: dict[str, BaseChannel] = {}
         self._dispatch_task: asyncio.Task | None = None
         self._origin_reply_fingerprints: dict[tuple[str, str, str], str] = {}
@@ -66,7 +49,7 @@ class ChannelManager:
         self._init_channels()
 
     def _init_channels(self) -> None:
-        """Initialize channels discovered via pkgutil scan + entry_points plugins."""
+        """Initialize channels from the registry when enabled in config."""
         from nanobot.channels.registry import discover_all
 
         transcription_provider = self.config.channels.transcription_provider
@@ -87,15 +70,7 @@ class ChannelManager:
             if not enabled:
                 continue
             try:
-                kwargs: dict[str, Any] = {}
-                # Only the WebSocket channel currently hosts the embedded webui
-                # surface; other channels stay oblivious to these knobs.
-                if cls.name == "websocket" and self._session_manager is not None:
-                    kwargs["session_manager"] = self._session_manager
-                    static_path = _default_webui_dist()
-                    if static_path is not None:
-                        kwargs["static_dist_path"] = static_path
-                channel = cls(section, self.bus, **kwargs)
+                channel = cls(section, self.bus)
                 channel.transcription_provider = transcription_provider
                 channel.transcription_api_key = transcription_key
                 channel.transcription_api_base = transcription_base
@@ -317,13 +292,6 @@ class ChannelManager:
                         continue
 
                 if msg.metadata.get("_retry_wait"):
-                    continue
-
-                if (
-                    msg.metadata.get("_runtime_model_updated")
-                    and msg.channel == "websocket"
-                    and "websocket" not in self.channels
-                ):
                     continue
 
                 # Coalesce consecutive _stream_delta messages for the same (channel, chat_id)

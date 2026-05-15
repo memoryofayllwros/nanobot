@@ -39,7 +39,6 @@ from nanobot.utils.helpers import image_placeholder_text
 from nanobot.utils.helpers import truncate_text as truncate_text_fn
 from nanobot.utils.image_generation_intent import image_generation_prompt
 from nanobot.utils.runtime import EMPTY_FINAL_RESPONSE_MESSAGE
-from nanobot.utils.webui_titles import mark_webui_session, maybe_generate_webui_title_after_turn
 
 if TYPE_CHECKING:
     from nanobot.config.schema import (
@@ -959,33 +958,6 @@ class AgentLoop:
                             channel=msg.channel, chat_id=msg.chat_id,
                             content="", metadata=msg.metadata or {},
                         ))
-                    if msg.channel == "websocket":
-                        # Signal that the turn is fully complete (all tools executed,
-                        # final text streamed).  This lets WS clients know when to
-                        # definitively stop the loading indicator.
-                        await self.bus.publish_outbound(OutboundMessage(
-                            channel=msg.channel, chat_id=msg.chat_id,
-                            content="", metadata={**msg.metadata, "_turn_end": True},
-                        ))
-                        if msg.metadata.get("webui") is True:
-                            async def _generate_title_and_notify() -> None:
-                                generated = await maybe_generate_webui_title_after_turn(
-                                    channel=msg.channel,
-                                    metadata=msg.metadata,
-                                    sessions=self.sessions,
-                                    session_key=session_key,
-                                    provider=self.provider,
-                                    model=self.model,
-                                )
-                                if generated:
-                                    await self.bus.publish_outbound(OutboundMessage(
-                                        channel=msg.channel,
-                                        chat_id=msg.chat_id,
-                                        content="",
-                                        metadata={**msg.metadata, "_session_updated": True},
-                                    ))
-
-                            self._schedule_background(_generate_title_and_notify())
                 except asyncio.CancelledError:
                     logger.info("Task cancelled for session {}", session_key)
                     # Preserve partial context from the interrupted turn so
@@ -1134,8 +1106,6 @@ class AgentLoop:
         )
         content = final_content or "Background task completed."
         outbound_metadata: dict[str, Any] = {}
-        if channel == "slack" and key.startswith("slack:") and key.count(":") >= 2:
-            outbound_metadata["slack"] = {"thread_ts": key.split(":", 2)[2]}
         if origin_message_id := msg.metadata.get("origin_message_id"):
             outbound_metadata["origin_message_id"] = origin_message_id
         return OutboundMessage(
@@ -1350,7 +1320,6 @@ class AgentLoop:
         # ensure it exists in case this handler is invoked independently.
         if ctx.session is None:
             ctx.session = self.sessions.get_or_create(ctx.session_key)
-        mark_webui_session(ctx.session, msg.metadata)
 
         if self._restore_runtime_checkpoint(ctx.session):
             self.sessions.save(ctx.session)

@@ -663,7 +663,6 @@ def _run_gateway(
     from nanobot.agent.tools.message import MessageTool
     from nanobot.bus.queue import MessageBus
     from nanobot.channels.manager import ChannelManager
-    from nanobot.channels.websocket import publish_runtime_model_update
     from nanobot.cron.service import CronService
     from nanobot.cron.types import CronJob
     from nanobot.heartbeat.service import HeartbeatService
@@ -703,11 +702,6 @@ def _run_gateway(
             "aihubmix": config.providers.aihubmix,
         },
         provider_snapshot_loader=load_provider_snapshot,
-        runtime_model_publisher=lambda model, preset: publish_runtime_model_update(
-            bus,
-            model,
-            preset,
-        ),
         provider_signature=provider_snapshot.signature,
     )
 
@@ -829,9 +823,7 @@ def _run_gateway(
 
     cron.on_job = on_cron_job
 
-    # Create channel manager (forwards SessionManager so the WebSocket channel
-    # can serve the embedded webui's REST surface).
-    channels = ChannelManager(config, bus, session_manager=session_manager)
+    channels = ChannelManager(config, bus)
 
     def _pick_heartbeat_target() -> tuple[str, str]:
         """Pick a routable channel/chat target for heartbeat-triggered messages."""
