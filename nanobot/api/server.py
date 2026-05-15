@@ -7,10 +7,16 @@ All requests route to a single persistent API session.
 from __future__ import annotations
 
 import asyncio
+import base64
 import contextlib
+import hashlib
+import hmac
 import json as _json
+import mimetypes
+import os
 import time
 import uuid
+from pathlib import Path
 from typing import Any
 
 from aiohttp import web
@@ -52,7 +58,103 @@ def _error_json(status: int, message: str, err_type: str = "invalid_request_erro
     )
 
 
-def _chat_completion_response(content: str, model: str) -> dict[str, Any]:
+def _media_token_secret() -> bytes:
+    secret = (
+        os.getenv("NANOBOT_MEDIA_TOKEN_SECRET")
+        or os.getenv("NANOBOT_API_SERVER_KEY")
+        or "nanobot-local-media-token"
+    )
+    return secret.encode("utf-8")
+
+
+def _b64url_encode(raw: bytes) -> str:
+    return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
+
+def _b64url_decode(value: str) -> bytes:
+    padding = "=" * (-len(value) % 4)
+    return base64.urlsafe_b64decode(value + padding)
+
+
+def _is_under(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+        return True
+    except ValueError:
+        return False
+
+
+def _allowed_media_roots(agent_loop: Any) -> list[Path]:
+    roots = [get_media_dir().resolve(strict=False)]
+    workspace = getattr(agent_loop, "workspace", None)
+    if workspace:
+        roots.append(Path(workspace).expanduser().resolve(strict=False))
+    return roots
+
+
+def _create_media_token(path: str) -> str:
+    payload = {"path": path, "exp": int(time.time()) + 3600}
+    payload_raw = _json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    sig = hmac.new(_media_token_secret(), payload_raw, hashlib.sha256).digest()
+    return f"{_b64url_encode(payload_raw)}.{_b64url_encode(sig)}"
+
+
+def _verify_media_token(token: str, agent_loop: Any) -> Path | None:
+    try:
+        payload_part, sig_part = token.split(".", 1)
+        payload_raw = _b64url_decode(payload_part)
+        expected = hmac.new(_media_token_secret(), payload_raw, hashlib.sha256).digest()
+        actual = _b64url_decode(sig_part)
+        if not hmac.compare_digest(expected, actual):
+            return None
+        payload = _json.loads(payload_raw.decode("utf-8"))
+        if int(payload.get("exp", 0)) < int(time.time()):
+            return None
+        path = Path(str(payload.get("path") or "")).expanduser().resolve(strict=False)
+    except Exception:
+        return None
+
+    if not path.is_file():
+        return None
+    for root in _allowed_media_roots(agent_loop):
+        if path == root or _is_under(path, root):
+            return path
+    return None
+
+
+def _media_payload(media_paths: list[str]) -> list[dict[str, str]]:
+    payload: list[dict[str, str]] = []
+    for raw in media_paths:
+        path = Path(raw).expanduser().resolve(strict=False)
+        if not path.is_file():
+            continue
+        content_type = mimetypes.guess_type(str(path))[0] or "application/octet-stream"
+        payload.append(
+            {
+                "token": _create_media_token(str(path)),
+                "filename": path.name,
+                "content_type": content_type,
+            }
+        )
+    return payload
+
+
+def _response_media(value: Any) -> list[str]:
+    media = getattr(value, "media", None)
+    if not isinstance(media, list):
+        return []
+    return [str(item) for item in media if isinstance(item, str) and item.strip()]
+
+
+def _chat_completion_response(
+    content: str,
+    model: str,
+    media_paths: list[str] | None = None,
+) -> dict[str, Any]:
+    message: dict[str, Any] = {"role": "assistant", "content": content}
+    media = _media_payload(media_paths or [])
+    if media:
+        message["media"] = media
     return {
         "id": f"chatcmpl-{uuid.uuid4().hex[:12]}",
         "object": "chat.completion",
@@ -61,7 +163,7 @@ def _chat_completion_response(content: str, model: str) -> dict[str, Any]:
         "choices": [
             {
                 "index": 0,
-                "message": {"role": "assistant", "content": content},
+                "message": message,
                 "finish_reason": "stop",
             }
         ],
@@ -357,6 +459,7 @@ async def handle_chat_completions(request: web.Request) -> web.Response:
                         ),
                         timeout=timeout_s,
                     )
+                    response = retry_response
                     response_text = _response_text(retry_response)
                     if not response_text or not response_text.strip():
                         logger.warning("Empty response after retry, using fallback")
@@ -371,7 +474,8 @@ async def handle_chat_completions(request: web.Request) -> web.Response:
         logger.exception("Unexpected API lock error for session {}", session_key)
         return _error_json(500, "Internal server error", err_type="server_error")
 
-    return web.json_response(_chat_completion_response(response_text, model_name))
+    response_media = _response_media(response)
+    return web.json_response(_chat_completion_response(response_text, model_name, response_media))
 
 
 async def handle_models(request: web.Request) -> web.Response:
@@ -397,6 +501,26 @@ async def handle_health(request: web.Request) -> web.Response:
     return web.json_response({"status": "ok"})
 
 
+async def handle_media(request: web.Request) -> web.Response:
+    """Serve a signed generated attachment to trusted upstream proxies."""
+    token = request.match_info.get("token", "")
+    path = _verify_media_token(token, request.app["agent_loop"])
+    if path is None:
+        return _error_json(404, "Media not found")
+
+    headers = {
+        "Content-Disposition": f'attachment; filename="{path.name}"',
+        "Cache-Control": "private, max-age=300",
+    }
+    content_type = mimetypes.guess_type(str(path))[0] or "application/octet-stream"
+    headers["Content-Type"] = content_type
+    return web.FileResponse(
+        path,
+        headers=headers,
+        chunk_size=256 * 1024,
+    )
+
+
 # ---------------------------------------------------------------------------
 # App factory
 # ---------------------------------------------------------------------------
@@ -420,5 +544,6 @@ def create_app(
 
     app.router.add_post("/v1/chat/completions", handle_chat_completions)
     app.router.add_get("/v1/models", handle_models)
+    app.router.add_get("/v1/media/{token}", handle_media)
     app.router.add_get("/health", handle_health)
     return app
