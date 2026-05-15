@@ -218,6 +218,15 @@ def _valid_local_attachment_path(path: str, *, workspace: str | Path) -> str | N
     if not resolved.is_file():
         return None
 
+    # HTTP/API channel uploads (e.g. WhatsApp PDFs saved under media/api/) are inbound
+    # conversation context — never treat them as outbound "deliverables" for link/media APIs.
+    try:
+        api_inbox = get_media_dir("api").resolve(strict=False)
+        if api_inbox.exists() and (_is_under(resolved, api_inbox) or resolved == api_inbox):
+            return None
+    except OSError:
+        pass
+
     workspace_root = Path(workspace).expanduser().resolve(strict=False)
     media_root = get_media_dir().resolve(strict=False)
     if not (
