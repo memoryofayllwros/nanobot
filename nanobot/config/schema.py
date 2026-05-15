@@ -37,7 +37,8 @@ class ChannelsConfig(Base):
     send_tool_hints: bool = False  # stream tool-call hints (e.g. read_file("…"))
     show_reasoning: bool = True  # surface model reasoning when channel implements it
     send_max_retries: int = Field(default=3, ge=0, le=10)  # Max delivery attempts (initial send included)
-    transcription_provider: str = "groq"  # Voice transcription backend: "groq" or "openai"
+    transcription_provider: str  # Voice transcription: "groq", "openai", or "openrouter"
+    transcription_model: str | None = None  # OpenRouter STT model slug (default: google/gemini-3.1-flash-lite)
     transcription_language: str | None = Field(default=None, pattern=r"^[a-z]{2,3}$")  # Optional ISO-639-1 hint for audio transcription
 
 

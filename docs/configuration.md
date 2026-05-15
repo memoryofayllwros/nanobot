@@ -45,7 +45,7 @@ IMAP_PASSWORD=your-password-here
 ## Providers
 
 > [!TIP]
-> - **Voice transcription**: Voice messages (Telegram, WhatsApp) are automatically transcribed using Whisper. By default Groq is used (free tier). Set `"transcriptionProvider": "openai"` under `channels` to use OpenAI Whisper instead, and optionally set `"transcriptionLanguage": "en"` (or another ISO-639-1 code) for more accurate transcription. The API key is picked from the matching provider config.
+> - **Voice transcription**: Voice messages and WebUI audio attachments are transcribed automatically. Set `"transcriptionProvider"` under `channels` to `"groq"` (default, Whisper), `"openai"` (Whisper), or `"openrouter"` (OpenRouter [`/audio/transcriptions`](https://openrouter.ai/docs/guides/overview/multimodal/stt) — default model `google/gemini-3.1-flash-lite` when using OpenRouter). Optionally set `"transcriptionModel"` to override the OpenRouter STT model slug, and `"transcriptionLanguage": "en"` (ISO-639-1) for a language hint. API keys come from the matching `providers.*` block (`groq`, `openai`, or `openrouter`).
 > - **MiniMax Coding Plan**: Exclusive discount links for the nanobot community: [Overseas](https://platform.minimax.io/subscribe/coding-plan?code=9txpdXw04g&source=link) · [Mainland China](https://platform.minimaxi.com/subscribe/token-plan?code=GILTJpMTqZ&source=link)
 > - **MiniMax (Mainland China)**: If your API key is from MiniMax's mainland China platform (minimaxi.com), set `"apiBase": "https://api.minimaxi.com/v1"` in your minimax provider config.
 > - **MiniMax thinking mode**: Use `providers.minimaxAnthropic` when you want `reasoningEffort` / thinking mode. MiniMax exposes that capability through its Anthropic-compatible endpoint, so nanobot keeps it as a separate provider instead of guessing MiniMax-specific thinking parameters on the generic OpenAI-compatible `minimax` endpoint. It uses the same `MINIMAX_API_KEY`. Default Anthropic-compatible base URL: `https://api.minimax.io/anthropic`; for mainland China use `https://api.minimaxi.com/anthropic`.
@@ -58,7 +58,7 @@ IMAP_PASSWORD=your-password-here
 | Provider | Purpose | Get API Key |
 |----------|---------|-------------|
 | `custom` | Any OpenAI-compatible endpoint | — |
-| `openrouter` | LLM (recommended, access to all models) | [openrouter.ai](https://openrouter.ai) |
+| `openrouter` | LLM (recommended, access to all models) and optional voice STT via `channels.transcriptionProvider` | [openrouter.ai](https://openrouter.ai) |
 | `huggingface` | LLM (Hugging Face Inference Providers) | [huggingface.co/settings/tokens](https://huggingface.co/settings/tokens) |
 | `volcengine` | LLM (VolcEngine, pay-per-use) | [Coding Plan](https://www.volcengine.com/activity/codingplan?utm_campaign=nanobot&utm_content=nanobot&utm_medium=devrel&utm_source=OWO&utm_term=nanobot) · [volcengine.com](https://www.volcengine.com) |
 | `byteplus` | LLM (VolcEngine international, pay-per-use) | [Coding Plan](https://www.byteplus.com/en/activity/codingplan?utm_campaign=nanobot&utm_content=nanobot&utm_medium=devrel&utm_source=OWO&utm_term=nanobot) · [byteplus.com](https://www.byteplus.com) |
@@ -767,12 +767,15 @@ Global settings that apply to all channels. Configure under the `channels` secti
     "sendProgress": true,
     "sendToolHints": false,
     "sendMaxRetries": 3,
-    "transcriptionProvider": "groq",
+    "transcriptionProvider": "openrouter",
+    "transcriptionModel": "google/gemini-3.1-flash-lite",
     "transcriptionLanguage": null,
     "telegram": { ... }
   }
 }
 ```
+
+When `transcriptionProvider` is `"openrouter"`, configure `providers.openrouter.apiKey` (and optionally `apiBase`); you can omit `transcriptionModel` to use the default `google/gemini-3.1-flash-lite`.
 
 | Setting | Default | Description |
 |---------|---------|-------------|
@@ -780,7 +783,8 @@ Global settings that apply to all channels. Configure under the `channels` secti
 | `sendToolHints` | `false` | Stream tool-call hints (e.g. `read_file("…")`) |
 | `showReasoning` | `true` | Allow channels to surface model reasoning/thinking content (DeepSeek-R1 `reasoning_content`, Anthropic `thinking_blocks`, inline `<think>` tags). Reasoning flows as a dedicated stream with `_reasoning_delta` / `_reasoning_end` markers — channels override `send_reasoning_delta` / `send_reasoning_end` to render in-place updates. Even with `true`, channels without those overrides stay no-op silently. Currently surfaced on CLI and WebSocket/WebUI (italic shimmer header, auto-collapses after the stream ends); Telegram / Slack / Discord / Feishu / WeChat / Matrix keep the base no-op until their bubble UI is adapted. Independent of `sendProgress`. |
 | `sendMaxRetries` | `3` | Max delivery attempts per outbound message, including the initial send (0-10 configured, minimum 1 actual attempt) |
-| `transcriptionProvider` | `"groq"` | Voice transcription backend: `"groq"` (free tier, default) or `"openai"`. API key is auto-resolved from the matching provider config. |
+| `transcriptionProvider` | `"groq"` | Voice transcription backend: `"groq"` (Whisper, default), `"openai"` (Whisper), or `"openrouter"` (uses `providers.openrouter` with OpenRouter STT). |
+| `transcriptionModel` | `null` | Optional OpenRouter STT model slug. When `transcriptionProvider` is `"openrouter"` and this is omitted, defaults to `google/gemini-3.1-flash-lite`. |
 | `transcriptionLanguage` | `null` | Optional ISO-639-1 language hint for audio transcription, e.g. `"en"`, `"ko"`, `"ja"`. |
 
 `sendProgress` and `sendToolHints` can also be overridden per channel. The

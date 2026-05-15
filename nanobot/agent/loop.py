@@ -34,7 +34,7 @@ from nanobot.providers.base import LLMProvider
 from nanobot.providers.factory import ProviderSnapshot
 from nanobot.session.manager import Session, SessionManager
 from nanobot.utils.artifacts import generated_image_paths_from_messages
-from nanobot.utils.document import extract_documents
+from nanobot.utils.document import detect_media_mime, extract_documents
 from nanobot.utils.helpers import image_placeholder_text
 from nanobot.utils.helpers import truncate_text as truncate_text_fn
 from nanobot.utils.image_generation_intent import image_generation_prompt
@@ -51,6 +51,25 @@ if TYPE_CHECKING:
 
 
 UNIFIED_SESSION_KEY = "unified:default"
+
+
+def _transcription_settings_from_config(config: Any) -> tuple[str, str, str, str | None, str | None]:
+    """Match ChannelManager: resolve STT credentials (Groq, OpenAI, or OpenRouter)."""
+    ch = config.channels
+    provider = ch.transcription_provider
+    language = ch.transcription_language
+    model = ch.transcription_model
+    try:
+        if provider == "openai":
+            sec = config.providers.openai
+            return provider, sec.api_key, sec.api_base or "", language, model
+        if provider == "openrouter":
+            sec = config.providers.openrouter
+            return provider, sec.api_key, sec.api_base or "", language, model
+        sec = config.providers.groq
+        return provider, sec.api_key, sec.api_base or "", language, model
+    except AttributeError:
+        return provider, "", "", language, model
 
 
 class TurnState(Enum):
@@ -160,6 +179,11 @@ class AgentLoop:
         session_manager: SessionManager | None = None,
         mcp_servers: dict | None = None,
         channels_config: ChannelsConfig | None = None,
+        transcription_provider: str = "groq",
+        transcription_api_key: str = "",
+        transcription_api_base: str = "",
+        transcription_language: str | None = None,
+        transcription_model: str | None = None,
         timezone: str | None = None,
         session_ttl_minutes: int = 0,
         consolidation_ratio: float = 0.5,
@@ -183,6 +207,11 @@ class AgentLoop:
         defaults = AgentDefaults()
         self.bus = bus
         self.channels_config = channels_config
+        self.transcription_provider = transcription_provider
+        self.transcription_api_key = transcription_api_key or ""
+        self.transcription_api_base = transcription_api_base or ""
+        self.transcription_language = transcription_language
+        self.transcription_model = transcription_model
         self.provider = provider
         self._provider_snapshot_loader = provider_snapshot_loader
         self._preset_snapshot_loader = preset_snapshot_loader
@@ -320,6 +349,7 @@ class AgentLoop:
             config,
             provider_snapshot_loader,
         )
+        tp, tk, tb, tl, tm = _transcription_settings_from_config(config)
         return cls(
             bus=bus,
             provider=provider,
@@ -334,6 +364,11 @@ class AgentLoop:
             restrict_to_workspace=config.tools.restrict_to_workspace,
             mcp_servers=config.tools.mcp_servers,
             channels_config=config.channels,
+            transcription_provider=tp,
+            transcription_api_key=tk,
+            transcription_api_base=tb,
+            transcription_language=tl,
+            transcription_model=tm,
             timezone=defaults.timezone,
             unified_session=defaults.unified_session,
             disabled_skills=defaults.disabled_skills,
@@ -705,11 +740,11 @@ class AgentLoop:
             if pending_queue is None:
                 return []
 
-            def _to_user_message(pending_msg: InboundMessage) -> dict[str, Any]:
+            async def _to_user_message(pending_msg: InboundMessage) -> dict[str, Any]:
                 content = pending_msg.content
                 media = pending_msg.media if pending_msg.media else None
                 if media:
-                    content, media = extract_documents(content, media)
+                    content, media = await self._prepare_inbound_media(content, list(media))
                     media = media or None
                 user_content = self.context._build_user_content(content, media)
                 runtime_ctx = self.context._build_runtime_context(
@@ -726,7 +761,7 @@ class AgentLoop:
             items: list[dict[str, Any]] = []
             while len(items) < limit:
                 try:
-                    items.append(_to_user_message(pending_queue.get_nowait()))
+                    items.append(await _to_user_message(pending_queue.get_nowait()))
                 except asyncio.QueueEmpty:
                     break
 
@@ -744,10 +779,10 @@ class AgentLoop:
                         session.key,
                     )
                     return items
-                items.append(_to_user_message(msg))
+                items.append(await _to_user_message(msg))
                 while len(items) < limit:
                     try:
-                        items.append(_to_user_message(pending_queue.get_nowait()))
+                        items.append(await _to_user_message(pending_queue.get_nowait()))
                     except asyncio.QueueEmpty:
                         break
 
@@ -1230,12 +1265,81 @@ class AgentLoop:
             metadata=meta,
         )
 
+    async def _transcribe_audio_file(self, file_path: str | Path) -> str:
+        """Transcribe one audio file using the configured STT backend."""
+        if not self.transcription_api_key:
+            return ""
+        try:
+            if self.transcription_provider == "openai":
+                from nanobot.providers.transcription import OpenAITranscriptionProvider
+
+                provider = OpenAITranscriptionProvider(
+                    api_key=self.transcription_api_key,
+                    api_base=self.transcription_api_base or None,
+                    language=self.transcription_language or None,
+                )
+            elif self.transcription_provider == "openrouter":
+                from nanobot.providers.transcription import OpenRouterTranscriptionProvider
+
+                provider = OpenRouterTranscriptionProvider(
+                    api_key=self.transcription_api_key,
+                    api_base=self.transcription_api_base or None,
+                    language=self.transcription_language or None,
+                    model=self.transcription_model,
+                )
+            else:
+                from nanobot.providers.transcription import GroqTranscriptionProvider
+
+                provider = GroqTranscriptionProvider(
+                    api_key=self.transcription_api_key,
+                    api_base=self.transcription_api_base or None,
+                    language=self.transcription_language or None,
+                )
+            return await provider.transcribe(file_path)
+        except Exception:
+            logger.exception("Audio transcription failed for {}", file_path)
+            return ""
+
+    async def _inline_audio_transcriptions(self, content: str, media: list[str]) -> tuple[str, list[str]]:
+        """Run Whisper on audio attachments and remove them from *media* when consumed."""
+        if not media:
+            return content, media
+        extras: list[str] = []
+        kept: list[str] = []
+        for path_str in media:
+            mime = detect_media_mime(path_str)
+            if not (mime and mime.startswith("audio/")):
+                kept.append(path_str)
+                continue
+            if not self.transcription_api_key:
+                kept.append(path_str)
+                continue
+            text = await self._transcribe_audio_file(path_str)
+            label = Path(path_str).name
+            if text:
+                extras.append(f"[transcription: {text}]")
+                logger.info("Transcribed audio {}: {}...", label, text[:50])
+            else:
+                extras.append(f"[Audio: {label} — transcription failed or returned empty.]")
+
+        if extras:
+            joined = "\n".join(extras)
+            content = f"{content}\n\n{joined}" if content.strip() else joined
+        return content, kept
+
+    async def _prepare_inbound_media(self, content: str, media: list[str]) -> tuple[str, list[str]]:
+        """Transcribe audio, then extract document text and retain only image paths."""
+        content, media = await self._inline_audio_transcriptions(content, media)
+        return extract_documents(content, media)
+
     async def _state_restore(self, ctx: TurnContext) -> TurnState:
         """Restore checkpoint / pending user turn; extract documents."""
         msg = ctx.msg
 
         if msg.media:
-            new_content, image_only = extract_documents(msg.content, msg.media)
+            new_content, image_only = await self._prepare_inbound_media(
+                msg.content, list(msg.media),
+            )
             ctx.msg = dataclasses.replace(msg, content=new_content, media=image_only)
             msg = ctx.msg
 

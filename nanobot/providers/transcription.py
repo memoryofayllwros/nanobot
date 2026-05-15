@@ -1,11 +1,19 @@
-"""Voice transcription providers (Groq and OpenAI Whisper)."""
+"""Voice transcription providers (Groq, OpenAI Whisper, OpenRouter STT)."""
 
 import asyncio
+import base64
+import mimetypes
 import os
 from pathlib import Path
 
 import httpx
 from loguru import logger
+
+_OPENROUTER_ATTRIBUTION_HEADERS = {
+    "HTTP-Referer": "https://github.com/HKUDS/nanobot",
+    "X-OpenRouter-Title": "nanobot",
+    "X-OpenRouter-Categories": "cli-agent,personal-agent",
+}
 
 # Up to 3 retries (4 attempts total) with exponential backoff on transient
 # failures. Whisper endpoints occasionally return 502/503 under load, and
@@ -117,6 +125,137 @@ async def _post_transcription_with_retry(
             return payload.get("text", "")
 
 
+def _openrouter_audio_format(path: Path) -> str:
+    """Map file to OpenRouter ``input_audio.format`` (docs: wav, mp3, ogg, …)."""
+    ext = path.suffix.lower()
+    by_ext = {
+        ".wav": "wav",
+        ".wave": "wav",
+        ".mp3": "mp3",
+        ".mpeg": "mp3",
+        ".mpga": "mp3",
+        ".ogg": "ogg",
+        ".opus": "ogg",
+        ".oga": "ogg",
+        ".m4a": "m4a",
+        ".mp4": "m4a",
+        ".webm": "webm",
+        ".aac": "aac",
+        ".flac": "flac",
+    }
+    if ext in by_ext:
+        return by_ext[ext]
+    mime = mimetypes.guess_type(str(path))[0] or ""
+    if "wav" in mime:
+        return "wav"
+    if "mpeg" in mime or "mp3" in mime:
+        return "mp3"
+    if "ogg" in mime:
+        return "ogg"
+    if "mp4" in mime or "m4a" in mime:
+        return "m4a"
+    if "webm" in mime:
+        return "webm"
+    if "aac" in mime:
+        return "aac"
+    if "flac" in mime:
+        return "flac"
+    return "mp3"
+
+
+async def _post_openrouter_stt_with_retry(
+    *,
+    api_url: str,
+    api_key: str,
+    path: Path,
+    model: str,
+    language: str | None,
+    provider_label: str,
+) -> str:
+    try:
+        raw = path.read_bytes()
+    except OSError as e:
+        logger.exception("{} transcription error: cannot read audio file: {}", provider_label, e)
+        return ""
+    fmt = _openrouter_audio_format(path)
+    payload: dict[str, object] = {
+        "model": model,
+        "input_audio": {
+            "data": base64.b64encode(raw).decode("ascii"),
+            "format": fmt,
+        },
+    }
+    if language:
+        payload["language"] = language
+
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+        **_OPENROUTER_ATTRIBUTION_HEADERS,
+    }
+
+    async with httpx.AsyncClient() as client:
+        for attempt in range(_MAX_RETRIES + 1):
+            try:
+                response = await client.post(api_url, headers=headers, json=payload, timeout=120.0)
+            except _RETRYABLE_EXCEPTIONS as e:
+                if attempt < _MAX_RETRIES:
+                    logger.warning(
+                        "{} transcription transient error (attempt {}/{}): {}",
+                        provider_label,
+                        attempt + 1,
+                        _MAX_RETRIES + 1,
+                        e,
+                    )
+                    await asyncio.sleep(_BACKOFF_S[attempt])
+                    continue
+                logger.exception(
+                    "{} transcription error after {} attempts: {}",
+                    provider_label,
+                    _MAX_RETRIES + 1,
+                    e,
+                )
+                return ""
+            except Exception as e:
+                logger.exception("{} transcription error: {}", provider_label, e)
+                return ""
+
+            if response.status_code in _RETRYABLE_STATUS and attempt < _MAX_RETRIES:
+                logger.warning(
+                    "{} transcription transient HTTP {} (attempt {}/{})",
+                    provider_label,
+                    response.status_code,
+                    attempt + 1,
+                    _MAX_RETRIES + 1,
+                )
+                await asyncio.sleep(_BACKOFF_S[attempt])
+                continue
+
+            try:
+                response.raise_for_status()
+            except Exception as e:
+                logger.exception("{} transcription error: {}", provider_label, e)
+                return ""
+
+            try:
+                body = response.json()
+            except Exception as e:
+                logger.exception(
+                    "{} transcription error: malformed response body: {}",
+                    provider_label,
+                    e,
+                )
+                return ""
+            if not isinstance(body, dict):
+                logger.error(
+                    "{} transcription error: unexpected response shape: {!r}",
+                    provider_label,
+                    type(body).__name__,
+                )
+                return ""
+            return str(body.get("text", "") or "")
+
+
 class OpenAITranscriptionProvider:
     """Voice transcription provider using OpenAI's Whisper API."""
 
@@ -199,4 +338,42 @@ class GroqTranscriptionProvider:
             model="whisper-large-v3",
             provider_label="Groq",
             language=self.language,
+        )
+
+
+class OpenRouterTranscriptionProvider:
+    """Speech-to-text via OpenRouter ``/audio/transcriptions`` (e.g. Gemini)."""
+
+    DEFAULT_MODEL = "google/gemini-3.1-flash-lite"
+
+    def __init__(
+        self,
+        api_key: str | None = None,
+        api_base: str | None = None,
+        language: str | None = None,
+        model: str | None = None,
+    ):
+        self.api_key = api_key or os.environ.get("OPENROUTER_API_KEY")
+        base = (api_base or os.environ.get("OPENROUTER_API_BASE") or "https://openrouter.ai/api/v1").rstrip(
+            "/"
+        )
+        self.api_url = f"{base}/audio/transcriptions"
+        self.language = language or None
+        self.model = (model or "").strip() or self.DEFAULT_MODEL
+
+    async def transcribe(self, file_path: str | Path) -> str:
+        if not self.api_key:
+            logger.warning("OpenRouter API key not configured for transcription")
+            return ""
+        path = Path(file_path)
+        if not path.exists():
+            logger.error("Audio file not found: {}", file_path)
+            return ""
+        return await _post_openrouter_stt_with_retry(
+            api_url=self.api_url,
+            api_key=self.api_key,
+            path=path,
+            model=self.model,
+            language=self.language,
+            provider_label="OpenRouter",
         )

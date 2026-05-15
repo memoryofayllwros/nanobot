@@ -52,8 +52,22 @@ def load_config(config_path: Path | None = None) -> Config:
             logger.warning("Failed to load config from {}: {}", path, e)
             logger.warning("Using default configuration.")
 
+    _apply_channels_env_overrides(config)
     _apply_ssrf_whitelist(config)
     return config
+
+
+def _apply_channels_env_overrides(config: Config) -> None:
+    """Overlay ``NANOBOT_CHANNELS__*`` env vars (e.g. Docker / .env) onto ``channels``."""
+    p = os.environ.get("NANOBOT_CHANNELS__TRANSCRIPTION_PROVIDER")
+    if p and p.strip():
+        config.channels.transcription_provider = p.strip()
+    m = os.environ.get("NANOBOT_CHANNELS__TRANSCRIPTION_MODEL")
+    if m and m.strip():
+        config.channels.transcription_model = m.strip()
+    lang = os.environ.get("NANOBOT_CHANNELS__TRANSCRIPTION_LANGUAGE")
+    if lang and lang.strip():
+        config.channels.transcription_language = lang.strip()
 
 
 def _apply_ssrf_whitelist(config: Config) -> None:

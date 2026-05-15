@@ -73,6 +73,7 @@ class ChannelManager:
         transcription_key = self._resolve_transcription_key(transcription_provider)
         transcription_base = self._resolve_transcription_base(transcription_provider)
         transcription_language = self.config.channels.transcription_language
+        transcription_model = self.config.channels.transcription_model
 
         for name, cls in discover_all().items():
             section = getattr(self.config.channels, name, None)
@@ -99,6 +100,7 @@ class ChannelManager:
                 channel.transcription_api_key = transcription_key
                 channel.transcription_api_base = transcription_base
                 channel.transcription_language = transcription_language
+                channel.transcription_model = transcription_model
                 channel.send_progress = self._resolve_bool_override(
                     section, "send_progress", self.config.channels.send_progress,
                 )
@@ -120,6 +122,8 @@ class ChannelManager:
         try:
             if provider == "openai":
                 return self.config.providers.openai.api_key
+            if provider == "openrouter":
+                return self.config.providers.openrouter.api_key
             return self.config.providers.groq.api_key
         except AttributeError:
             return ""
@@ -129,6 +133,8 @@ class ChannelManager:
         try:
             if provider == "openai":
                 return self.config.providers.openai.api_base or ""
+            if provider == "openrouter":
+                return self.config.providers.openrouter.api_base or ""
             return self.config.providers.groq.api_base or ""
         except AttributeError:
             return ""

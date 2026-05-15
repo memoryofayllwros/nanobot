@@ -40,6 +40,19 @@ SUPPORTED_EXTENSIONS: set[str] = {
 _MAX_TEXT_LENGTH = 200_000
 
 
+def detect_media_mime(path_str: str | Path) -> str | None:
+    """Return a MIME type from magic bytes and/or filename, or None if unreadable."""
+    p = Path(path_str)
+    if not p.is_file():
+        return None
+    try:
+        with open(p, "rb") as f:
+            header = f.read(16)
+    except OSError:
+        return None
+    return detect_image_mime(header) or mimetypes.guess_type(str(path_str))[0]
+
+
 def extract_text(path: Path) -> str | None:
     """Extract text from a file.
 
@@ -296,9 +309,7 @@ def extract_documents(
             )
             continue
 
-        with open(p, "rb") as f:
-            header = f.read(16)
-        mime = detect_image_mime(header) or mimetypes.guess_type(path_str)[0]
+        mime = detect_media_mime(path_str)
         if mime and mime.startswith("image/"):
             image_paths.append(path_str)
         elif mime and mime.startswith("audio/"):

@@ -26,6 +26,7 @@ class BaseChannel(ABC):
     transcription_api_key: str = ""
     transcription_api_base: str = ""
     transcription_language: str | None = None
+    transcription_model: str | None = None
     send_progress: bool = True
     send_tool_hints: bool = False
     show_reasoning: bool = True
@@ -54,6 +55,14 @@ class BaseChannel(ABC):
                     api_key=self.transcription_api_key,
                     api_base=self.transcription_api_base or None,
                     language=self.transcription_language or None,
+                )
+            elif self.transcription_provider == "openrouter":
+                from nanobot.providers.transcription import OpenRouterTranscriptionProvider
+                provider = OpenRouterTranscriptionProvider(
+                    api_key=self.transcription_api_key,
+                    api_base=self.transcription_api_base or None,
+                    language=self.transcription_language or None,
+                    model=self.transcription_model,
                 )
             else:
                 from nanobot.providers.transcription import GroqTranscriptionProvider
