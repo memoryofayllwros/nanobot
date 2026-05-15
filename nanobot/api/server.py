@@ -24,6 +24,7 @@ from loguru import logger
 
 from nanobot.api.twilio_media import ingest_twilio_media_lines
 from nanobot.config.paths import get_media_dir
+from nanobot.utils.artifacts import discover_attachment_paths_from_text
 from nanobot.utils.helpers import safe_filename
 from nanobot.utils.media_decode import (
     MAX_FILE_SIZE,
@@ -475,6 +476,17 @@ async def handle_chat_completions(request: web.Request) -> web.Response:
         return _error_json(500, "Internal server error", err_type="server_error")
 
     response_media = _response_media(response)
+    if not response_media:
+        response_media = discover_attachment_paths_from_text(
+            f"{text}\n{response_text}",
+            workspace=getattr(agent_loop, "workspace", get_media_dir()),
+        )
+    if response_media:
+        logger.info(
+            "API response includes {} attachment(s): {}",
+            len(response_media),
+            [Path(item).name for item in response_media],
+        )
     return web.json_response(_chat_completion_response(response_text, model_name, response_media))
 
 

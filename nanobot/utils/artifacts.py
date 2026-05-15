@@ -45,6 +45,16 @@ _WRITE_TOOL_SUCCESS_RE = re.compile(
     r"Successfully (?:wrote \d+ characters to|created|edited) (?P<path>[^\n\r]+)",
     re.IGNORECASE,
 )
+_FILENAME_ATTACHMENT_RE = re.compile(
+    r"(?P<name>[A-Za-z0-9][A-Za-z0-9._-]{2,}\."
+    r"(?:xlsm|xlsx|xls|docx|doc|pptx|ppt|csv|pdf|txt|zip))",
+    re.IGNORECASE,
+)
+_SEARCH_TOKEN_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{2,}")
+_ATTACHMENT_INTENT_RE = re.compile(
+    r"\b(?:excel|xlsx|xls|spreadsheet|file|document|pdf|csv|attachment|send)\b",
+    re.IGNORECASE,
+)
 
 
 class ArtifactError(ValueError):
@@ -227,7 +237,89 @@ def _iter_attachment_refs(text: str) -> list[str]:
         refs.append(match.group("path"))
     for match in _WRITE_TOOL_SUCCESS_RE.finditer(text):
         refs.append(match.group("path"))
+    for match in _FILENAME_ATTACHMENT_RE.finditer(text):
+        refs.append(match.group("name"))
     return refs
+
+
+def _attachment_roots(workspace: str | Path) -> list[Path]:
+    roots: list[Path] = []
+    for root in (Path(workspace).expanduser(), get_media_dir()):
+        resolved = root.resolve(strict=False)
+        if resolved not in roots and resolved.exists():
+            roots.append(resolved)
+    return roots
+
+
+def _searchable_tokens(text: str) -> list[str]:
+    if not _ATTACHMENT_INTENT_RE.search(text):
+        return []
+
+    tokens: list[str] = []
+    seen: set[str] = set()
+    for match in _SEARCH_TOKEN_RE.finditer(text):
+        token = match.group(0).strip("._-")
+        lowered = token.lower()
+        if lowered in {
+            "excel", "xlsx", "xls", "file", "document", "send", "please",
+            "quotation", "download", "workspace", "home", "nanobot",
+        }:
+            continue
+        # Avoid broad natural-language tokens; quote numbers/codes are useful.
+        if not (any(ch.isdigit() for ch in token) or "-" in token or "_" in token):
+            continue
+        if lowered not in seen:
+            tokens.append(token)
+            seen.add(lowered)
+    return tokens
+
+
+def discover_attachment_paths_from_text(
+    text: str,
+    *,
+    workspace: str | Path,
+    max_results: int = 5,
+) -> list[str]:
+    """Find existing local attachments referenced by a user/assistant turn."""
+    paths: list[str] = []
+    seen: set[str] = set()
+
+    def add(path: str | None) -> None:
+        if not path or path in seen:
+            return
+        paths.append(path)
+        seen.add(path)
+
+    for ref in _iter_attachment_refs(text):
+        add(_valid_local_attachment_path(ref, workspace=workspace))
+
+    if len(paths) >= max_results:
+        return paths[:max_results]
+
+    tokens = _searchable_tokens(text)
+    if not tokens:
+        return paths
+
+    candidates: list[Path] = []
+    lowered_tokens = [token.lower() for token in tokens]
+    for root in _attachment_roots(workspace):
+        for candidate in root.rglob("*"):
+            if not candidate.is_file():
+                continue
+            if candidate.suffix.lower() not in _AUTOSEND_ATTACHMENT_EXTENSIONS:
+                continue
+            name = candidate.name.lower()
+            stem = candidate.stem.lower()
+            if any(token in name or token in stem for token in lowered_tokens):
+                candidates.append(candidate)
+
+    candidates.sort(key=lambda item: item.stat().st_mtime, reverse=True)
+    for candidate in candidates:
+        add(_valid_local_attachment_path(str(candidate), workspace=workspace))
+        if len(paths) >= max_results:
+            break
+
+    return paths
 
 
 def generated_attachment_paths_from_messages(
@@ -271,7 +363,7 @@ def generated_attachment_paths_from_messages(
             texts.append(payload)
 
     for text in texts:
-        for ref in _iter_attachment_refs(text):
-            add(_valid_local_attachment_path(ref, workspace=workspace))
+        for path in discover_attachment_paths_from_text(text, workspace=workspace):
+            add(path)
 
     return paths
