@@ -5,6 +5,7 @@ import base64
 import mimetypes
 import os
 from pathlib import Path
+from typing import Any
 
 import httpx
 from loguru import logger
@@ -231,10 +232,13 @@ async def _post_openrouter_stt_with_retry(
                 await asyncio.sleep(_BACKOFF_S[attempt])
                 continue
 
-            try:
-                response.raise_for_status()
-            except Exception as e:
-                logger.exception("{} transcription error: {}", provider_label, e)
+            if not response.is_success:
+                logger.warning(
+                    "{} STT HTTP {} — {!r}",
+                    provider_label,
+                    response.status_code,
+                    (response.text or "")[:800],
+                )
                 return ""
 
             try:
@@ -253,10 +257,103 @@ async def _post_openrouter_stt_with_retry(
                     type(body).__name__,
                 )
                 return ""
-            return str(body.get("text", "") or "")
+            err = body.get("error")
+            if err:
+                logger.warning("{} STT API error in body: {!r}", provider_label, err)
+                return ""
+            return str(body.get("text", "") or "").strip()
 
 
-class OpenAITranscriptionProvider:
+async def _openrouter_chat_input_audio_transcribe(
+    *,
+    api_base: str,
+    api_key: str,
+    path: Path,
+    model: str,
+    language: str | None,
+    provider_label: str,
+) -> str:
+    """Transcribe via OpenRouter ``/chat/completions`` with ``input_audio`` (Gemini, etc.)."""
+    try:
+        raw = path.read_bytes()
+    except OSError as e:
+        logger.exception("{} chat-audio error: cannot read file: {}", provider_label, e)
+        return ""
+    fmt = _openrouter_audio_format(path)
+    b64 = base64.b64encode(raw).decode("ascii")
+    lang_hint = f" The audio is likely in {language!r}." if language else ""
+    prompt = (
+        "Transcribe the speech in this audio verbatim. Output only the spoken words; "
+        "use the same language as the audio. No preamble, labels, or explanation."
+        + lang_hint
+    )
+    payload: dict[str, Any] = {
+        "model": model,
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt},
+                    {
+                        "type": "input_audio",
+                        "input_audio": {"data": b64, "format": fmt},
+                    },
+                ],
+            }
+        ],
+        "stream": False,
+    }
+    url = f"{api_base.rstrip('/')}/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+        **_OPENROUTER_ATTRIBUTION_HEADERS,
+    }
+
+    async with httpx.AsyncClient() as client:
+        try:
+            response = await client.post(url, headers=headers, json=payload, timeout=120.0)
+        except Exception as e:
+            logger.exception("{} chat-audio request failed: {}", provider_label, e)
+            return ""
+
+        if not response.is_success:
+            logger.warning(
+                "{} chat-audio HTTP {} — {!r}",
+                provider_label,
+                response.status_code,
+                (response.text or "")[:800],
+            )
+            return ""
+        try:
+            body = response.json()
+        except Exception as e:
+            logger.exception("{} chat-audio bad JSON: {}", provider_label, e)
+            return ""
+
+    if not isinstance(body, dict):
+        return ""
+    err = body.get("error")
+    if err:
+        logger.warning("{} chat-audio API error: {!r}", provider_label, err)
+        return ""
+
+    choices = body.get("choices")
+    if not isinstance(choices, list) or not choices:
+        return ""
+    message = choices[0].get("message") if isinstance(choices[0], dict) else None
+    if not isinstance(message, dict):
+        return ""
+    content = message.get("content")
+    if isinstance(content, str):
+        return content.strip()
+    if isinstance(content, list):
+        parts: list[str] = []
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "text":
+                parts.append(str(block.get("text", "")))
+        return "\n".join(parts).strip()
+    return ""
     """Voice transcription provider using OpenAI's Whisper API."""
 
     def __init__(
@@ -354,10 +451,10 @@ class OpenRouterTranscriptionProvider:
         model: str | None = None,
     ):
         self.api_key = api_key or os.environ.get("OPENROUTER_API_KEY")
-        base = (api_base or os.environ.get("OPENROUTER_API_BASE") or "https://openrouter.ai/api/v1").rstrip(
-            "/"
-        )
-        self.api_url = f"{base}/audio/transcriptions"
+        self._api_base = (
+            api_base or os.environ.get("OPENROUTER_API_BASE") or "https://openrouter.ai/api/v1"
+        ).rstrip("/")
+        self.api_url = f"{self._api_base}/audio/transcriptions"
         self.language = language or None
         self.model = (model or "").strip() or self.DEFAULT_MODEL
 
@@ -369,8 +466,23 @@ class OpenRouterTranscriptionProvider:
         if not path.exists():
             logger.error("Audio file not found: {}", file_path)
             return ""
-        return await _post_openrouter_stt_with_retry(
+        via_stt = await _post_openrouter_stt_with_retry(
             api_url=self.api_url,
+            api_key=self.api_key,
+            path=path,
+            model=self.model,
+            language=self.language,
+            provider_label="OpenRouter",
+        )
+        if via_stt.strip():
+            return via_stt
+
+        logger.info(
+            "OpenRouter dedicated STT returned empty; trying chat/completions input_audio model={}",
+            self.model,
+        )
+        return await _openrouter_chat_input_audio_transcribe(
+            api_base=self._api_base,
             api_key=self.api_key,
             path=path,
             model=self.model,

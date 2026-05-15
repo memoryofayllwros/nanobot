@@ -147,6 +147,16 @@ def _parse_json_content(body: dict) -> tuple[str, list[str]]:
     return text, media_paths
 
 
+def _multipart_field_name(part: Any) -> str:
+    """Normalize multipart field name for comparison (curl/clients vary by case)."""
+    raw = getattr(part, "name", None)
+    if raw is None:
+        return ""
+    if isinstance(raw, bytes):
+        raw = raw.decode("utf-8", errors="replace")
+    return str(raw).strip().lower()
+
+
 async def _parse_multipart(request: web.Request) -> tuple[str, list[str], str | None, str | None]:
     """Parse multipart/form-data. Returns (text, media_paths, session_id, model)."""
     media_dir = get_media_dir("api")
@@ -160,23 +170,34 @@ async def _parse_multipart(request: web.Request) -> tuple[str, list[str], str | 
         part = await reader.next()
         if part is None:
             break
-        if part.name == "message":
+        pname = _multipart_field_name(part)
+        filename = getattr(part, "filename", None)
+        # Some clients omit `name` and only send filename; accept that as a file part.
+        is_file_field = pname in ("files", "file") or (bool(filename) and pname == "")
+        if pname == "message":
             text = (await part.read()).decode("utf-8")
-        elif part.name == "session_id":
+        elif pname == "session_id":
             session_id = (await part.read()).decode("utf-8").strip()
-        elif part.name == "model":
+        elif pname == "model":
             model = (await part.read()).decode("utf-8").strip()
-        elif part.name == "files":
+        elif is_file_field:
             raw = await part.read()
             if len(raw) > MAX_FILE_SIZE:
                 raise _FileSizeExceeded(
-                    f"File '{part.filename}' exceeds {MAX_FILE_SIZE // (1024 * 1024)}MB limit"
+                    f"File '{filename}' exceeds {MAX_FILE_SIZE // (1024 * 1024)}MB limit"
                 )
-            base = safe_filename(part.filename or "upload.bin")
-            filename = f"{uuid.uuid4().hex[:12]}_{base}"
-            dest = media_dir / filename
+            base = safe_filename(filename or "upload.bin")
+            out_name = f"{uuid.uuid4().hex[:12]}_{base}"
+            dest = media_dir / out_name
             dest.write_bytes(raw)
             media_paths.append(str(dest))
+            logger.info(
+                "API multipart saved upload name={!r} filename={!r} bytes={} -> {}",
+                getattr(part, "name", None),
+                filename,
+                len(raw),
+                dest,
+            )
 
     if not text:
         text = "请分析上传的文件"
