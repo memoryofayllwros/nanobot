@@ -22,6 +22,29 @@ _MIME_EXTENSIONS = {
     "image/gif": ".gif",
 }
 _GENERATE_IMAGE_TOOL_NAME = "generate_image"
+_AUTOSEND_ATTACHMENT_EXTENSIONS = frozenset({
+    ".csv",
+    ".doc",
+    ".docx",
+    ".pdf",
+    ".ppt",
+    ".pptx",
+    ".txt",
+    ".xls",
+    ".xlsm",
+    ".xlsx",
+    ".zip",
+})
+_AUTOSEND_ATTACHMENT_RE = re.compile(
+    r"(?P<path>(?:~|/)[^\n\r<>\"'`]*?\."
+    r"(?:xlsm|xlsx|xls|docx|doc|pptx|ppt|csv|pdf|txt|zip))"
+    r"(?=$|[\s<>\")\]}'`*,，。;；:：])",
+    re.IGNORECASE,
+)
+_WRITE_TOOL_SUCCESS_RE = re.compile(
+    r"Successfully (?:wrote \d+ characters to|created|edited) (?P<path>[^\n\r]+)",
+    re.IGNORECASE,
+)
 
 
 class ArtifactError(ValueError):
@@ -159,4 +182,96 @@ def generated_image_paths_from_messages(messages: list[dict[str, Any]]) -> list[
             if isinstance(path, str) and path and path not in seen:
                 paths.append(path)
                 seen.add(path)
+    return paths
+
+
+def _is_under(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+        return True
+    except ValueError:
+        return False
+
+
+def _valid_local_attachment_path(path: str, *, workspace: str | Path) -> str | None:
+    candidate = path.strip().strip("*")
+    if not candidate:
+        return None
+
+    file_path = Path(candidate).expanduser()
+    if not file_path.is_absolute():
+        file_path = Path(workspace).expanduser() / file_path
+    resolved = file_path.resolve(strict=False)
+
+    if resolved.suffix.lower() not in _AUTOSEND_ATTACHMENT_EXTENSIONS:
+        return None
+    if not resolved.is_file():
+        return None
+
+    workspace_root = Path(workspace).expanduser().resolve(strict=False)
+    media_root = get_media_dir().resolve(strict=False)
+    if not (
+        _is_under(resolved, workspace_root)
+        or resolved == workspace_root
+        or _is_under(resolved, media_root)
+        or resolved == media_root
+    ):
+        return None
+
+    return str(resolved)
+
+
+def _iter_attachment_refs(text: str) -> list[str]:
+    refs: list[str] = []
+    for match in _AUTOSEND_ATTACHMENT_RE.finditer(text):
+        refs.append(match.group("path"))
+    for match in _WRITE_TOOL_SUCCESS_RE.finditer(text):
+        refs.append(match.group("path"))
+    return refs
+
+
+def generated_attachment_paths_from_messages(
+    messages: list[dict[str, Any]],
+    *,
+    workspace: str | Path,
+    final_content: str | None = None,
+) -> list[str]:
+    """Collect local files that should be attached to the final channel reply.
+
+    Generated images are stored as structured tool artifacts. Other files, like
+    Excel quotes or PDFs, are commonly surfaced by tools or the final response as
+    local paths; attach those only when they exist under the workspace/media roots.
+    """
+    paths: list[str] = []
+    seen: set[str] = set()
+
+    def add(path: str | None) -> None:
+        if not path or path in seen:
+            return
+        paths.append(path)
+        seen.add(path)
+
+    for image_path in generated_image_paths_from_messages(messages):
+        add(_valid_local_attachment_path(image_path, workspace=workspace) or image_path)
+
+    texts: list[str] = []
+    if final_content:
+        texts.append(final_content)
+
+    for message in messages:
+        role = message.get("role")
+        name = message.get("name")
+        if role == "assistant":
+            payload = _extract_text_payload(message.get("content"))
+        elif role == "tool" and name in {"write_file", "edit_file"}:
+            payload = _extract_text_payload(message.get("content"))
+        else:
+            payload = None
+        if payload:
+            texts.append(payload)
+
+    for text in texts:
+        for ref in _iter_attachment_refs(text):
+            add(_valid_local_attachment_path(ref, workspace=workspace))
+
     return paths

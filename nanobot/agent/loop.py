@@ -33,7 +33,7 @@ from nanobot.config.schema import AgentDefaults, ModelPresetConfig
 from nanobot.providers.base import LLMProvider
 from nanobot.providers.factory import ProviderSnapshot
 from nanobot.session.manager import Session, SessionManager
-from nanobot.utils.artifacts import generated_image_paths_from_messages
+from nanobot.utils.artifacts import generated_attachment_paths_from_messages
 from nanobot.utils.document import detect_media_mime, extract_documents
 from nanobot.utils.helpers import image_placeholder_text
 from nanobot.utils.helpers import truncate_text as truncate_text_fn
@@ -1441,7 +1441,11 @@ class AgentLoop:
 
         ctx.save_skip = 1 + len(ctx.history) + (1 if ctx.user_persisted_early else 0)
         skip_msgs = ctx.all_messages[ctx.save_skip:]
-        ctx.generated_media = generated_image_paths_from_messages(skip_msgs)
+        ctx.generated_media = generated_attachment_paths_from_messages(
+            skip_msgs,
+            workspace=self.workspace,
+            final_content=ctx.final_content,
+        )
         last_msg = ctx.all_messages[-1] if ctx.all_messages else None
         if ctx.generated_media and last_msg and last_msg.get("role") == "assistant":
             existing_media = last_msg.get("media")
