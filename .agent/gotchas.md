@@ -37,7 +37,7 @@ The heartbeat service (`heartbeat/service.py`) does not parse free-text LLM outp
 
 ## Skills as Extension Point
 
-Built-in skills live in `nanobot/skills/` (markdown + YAML frontmatter format). Agent capabilities that are "know-how" rather than code should be added as skills, not hardcoded into the agent loop. External skills can be published to and installed from ClawHub.
+Built-in skills live in `nanobot/skills/` (markdown + YAML frontmatter format). Agent capabilities that are "know-how" rather than code should be added as skills, not hardcoded into the agent loop.
 
 ## Atomic Session Writes
 
