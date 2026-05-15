@@ -24,6 +24,34 @@ _FS_WORKSPACE_BOUNDARY_NOTE = (
     "the user how to proceed if the resource is genuinely required)"
 )
 
+# Spreadsheet / document attachments — require explicit human OK before first write (human-in-the-loop).
+_DELIVERABLE_DOC_SUFFIXES = frozenset({
+    ".csv",
+    ".doc",
+    ".docx",
+    ".pdf",
+    ".ppt",
+    ".pptx",
+    ".xls",
+    ".xlsm",
+    ".xlsx",
+})
+
+
+def _needs_deliverable_confirmation(fp: Path) -> bool:
+    return fp.suffix.lower() in _DELIVERABLE_DOC_SUFFIXES
+
+
+def _deliverable_confirmation_required_msg(display_path: str, *, tool_name: str) -> str:
+    return (
+        f"Error: Human confirmation required before {tool_name} can generate this deliverable "
+        f"({display_path}). First send a normal reply that lists the key fields you will use "
+        "(e.g. counterparty, dates, line items, quantities, unit prices, totals, currency, filename) "
+        "and ask the user to confirm or correct. Only after they explicitly approve in this thread, "
+        "call this tool again with user_confirmed=true. "
+        "Never set user_confirmed=true without that explicit approval."
+    )
+
 
 def _resolve_path(
     path: str,
@@ -382,6 +410,14 @@ class ReadFileTool(_FsTool):
     tool_parameters_schema(
         path=StringSchema("The file path to write to"),
         content=StringSchema("The content to write"),
+        user_confirmed=BooleanSchema(
+            default=False,
+            description=(
+                "Set to true only after the user explicitly confirmed the proposed values in chat "
+                "(human-in-the-loop). Required when the path is a deliverable document such as .xlsx, "
+                ".csv, or .pdf."
+            ),
+        ),
         required=["path", "content"],
     )
 )
@@ -398,16 +434,27 @@ class WriteFileTool(_FsTool):
         return (
             "Write content to a file. Overwrites if the file already exists; "
             "creates parent directories as needed. "
-            "For partial edits, prefer edit_file instead."
+            "For partial edits, prefer edit_file instead. "
+            "For deliverable spreadsheets/documents (.xlsx, .csv, .pdf, .docx, etc.), summarize "
+            "the data in a user-visible reply and obtain explicit confirmation before writing; "
+            "then call again with user_confirmed=true."
         )
 
-    async def execute(self, path: str | None = None, content: str | None = None, **kwargs: Any) -> str:
+    async def execute(
+        self,
+        path: str | None = None,
+        content: str | None = None,
+        user_confirmed: bool = False,
+        **kwargs: Any,
+    ) -> str:
         try:
             if not path:
                 raise ValueError("Unknown path")
             if content is None:
                 raise ValueError("Unknown content")
             fp = self._resolve(path)
+            if _needs_deliverable_confirmation(fp) and not user_confirmed:
+                return _deliverable_confirmation_required_msg(str(fp), tool_name="write_file")
             fp.parent.mkdir(parents=True, exist_ok=True)
             fp.write_text(content, encoding="utf-8")
             self._file_states.record_write(fp)
@@ -693,6 +740,14 @@ def _find_match(content: str, old_text: str) -> tuple[str | None, int]:
         old_text=StringSchema("The text to find and replace"),
         new_text=StringSchema("The text to replace with"),
         replace_all=BooleanSchema(description="Replace all occurrences (default false)"),
+        user_confirmed=BooleanSchema(
+            default=False,
+            description=(
+                "Set to true only after the user explicitly approved the contents in chat. "
+                "Required when using create semantics (old_text empty) on a deliverable document path "
+                "such as .xlsx, .csv, or .pdf."
+            ),
+        ),
         required=["path", "old_text", "new_text"],
     )
 )
@@ -713,7 +768,9 @@ class EditFileTool(_FsTool):
             "Edit a file by replacing old_text with new_text. "
             "Tolerates minor whitespace/indentation differences and curly/straight quote mismatches. "
             "If old_text matches multiple times, you must provide more context "
-            "or set replace_all=true. Shows a diff of the closest match on failure."
+            "or set replace_all=true. Shows a diff of the closest match on failure. "
+            "When creating a deliverable spreadsheet/document with old_text empty, confirm with the "
+            "user first, then pass user_confirmed=true."
         )
 
     @staticmethod
@@ -724,7 +781,7 @@ class EditFileTool(_FsTool):
     async def execute(
         self, path: str | None = None, old_text: str | None = None,
         new_text: str | None = None,
-        replace_all: bool = False, **kwargs: Any,
+        replace_all: bool = False, user_confirmed: bool = False, **kwargs: Any,
     ) -> str:
         try:
             if not path:
@@ -743,6 +800,8 @@ class EditFileTool(_FsTool):
             # Create-file semantics: old_text='' + file doesn't exist → create
             if not fp.exists():
                 if old_text == "":
+                    if _needs_deliverable_confirmation(fp) and not user_confirmed:
+                        return _deliverable_confirmation_required_msg(str(fp), tool_name="edit_file")
                     fp.parent.mkdir(parents=True, exist_ok=True)
                     fp.write_text(new_text, encoding="utf-8")
                     self._file_states.record_write(fp)
@@ -763,6 +822,8 @@ class EditFileTool(_FsTool):
                 content = raw.decode("utf-8")
                 if content.strip():
                     return f"Error: Cannot create file — {path} already exists and is not empty."
+                if _needs_deliverable_confirmation(fp) and not user_confirmed:
+                    return _deliverable_confirmation_required_msg(str(fp), tool_name="edit_file")
                 fp.write_text(new_text, encoding="utf-8")
                 self._file_states.record_write(fp)
                 return f"Successfully edited {fp}"

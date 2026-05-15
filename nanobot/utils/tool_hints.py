@@ -1,9 +1,7 @@
 """Tool hint formatting for concise, human-readable tool call display."""
 
 from __future__ import annotations
-
 import re
-
 from nanobot.utils.path import abbreviate_path
 
 # Registry: tool_name -> (key_args, template, is_path, is_command)
